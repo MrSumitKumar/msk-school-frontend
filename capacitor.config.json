@@ -1,0 +1,14 @@
+{
+  "appId": "com.schoolsaas.app",
+  "appName": "SchoolSaaS",
+  "webDir": "dist",
+  "server": {
+    "url": "http://192.168.1.39:5173",
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "192.168.1.39:8000",
+      "192.168.1.39:5173"
+    ]
+  }
+}
