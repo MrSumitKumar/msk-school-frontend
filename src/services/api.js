@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 
 // TIP: Using dynamic hostname makes it work on both local and external networks.
 // const BASE_URL = `http://${window.location.hostname}:8000/api`;
-const BASE_URL = `https://msk-school-backend-1.onrender.com/api`;
+const BASE_URL = 'https://msk-school-backend-1.onrender.com/api';
 
 const api = axios.create({
     baseURL: BASE_URL,
