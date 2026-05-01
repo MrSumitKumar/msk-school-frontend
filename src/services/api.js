@@ -71,6 +71,9 @@ export const saasApi = {
         delete: (id) => api.delete(`/schools/subscriptions/${id}/`),
         getBySchool: (schoolId) => api.get('/schools/subscriptions/', { params: { school: schoolId } }),
     },
+    subscriptionHistory: {
+        list: (params) => api.get('/schools/subscription-history/', { params }),
+    },
     payments: {
         list: (params) => api.get('/schools/payments/', { params }),
     },

@@ -51,14 +51,31 @@ export default function BillingPage() {
         queryFn: () => schoolsApi.billing.currentPlan(),
     });
 
-    // Fetch all available plans
     const { data: plansData, isLoading: plansLoading } = useQuery({
         queryKey: ['available-plans'],
         queryFn: () => schoolsApi.plans.list(),
     });
 
+    const { data: historyData, isLoading: historyLoading } = useQuery({
+        queryKey: ['subscription-history'],
+        queryFn: () => saasApi.subscriptionHistory.list(),
+    });
+
+    const { data: paymentsData, isLoading: paymentsLoading } = useQuery({
+        queryKey: ['payments-history'],
+        queryFn: () => saasApi.payments.list(),
+    });
+
+    const { data: notificationsData } = useQuery({
+        queryKey: ['billing-notifications'],
+        queryFn: () => saasApi.notifications.list({ notification_type: 'billing', is_read: 'false' }),
+    });
+
     const activeSub = subData?.active_plan;
     const plans = plansData?.results || plansData || [];
+    const historyList = historyData?.results || historyData || [];
+    const paymentsList = paymentsData?.results || paymentsData || [];
+    const notifications = notificationsData?.results || notificationsData || [];
 
     // Sort plans: basic → pro → premium
     const PLAN_ORDER = ['basic', 'pro', 'premium'];
@@ -67,6 +84,13 @@ export default function BillingPage() {
     );
 
     const isExpired = activeSub && new Date(activeSub.end_date) < new Date();
+    
+    let daysRemaining = 0;
+    if (activeSub) {
+        const diff = new Date(activeSub.end_date) - new Date();
+        daysRemaining = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    }
+    const isNearExpiry = !activeSub || isExpired || daysRemaining <= 15;
 
     // ── Handle returning from PhonePe redirect ────────────────────────
     useEffect(() => {
@@ -117,13 +141,17 @@ export default function BillingPage() {
     };
 
     const handleBuyPlan = (plan) => {
+        if (!isNearExpiry) {
+            toast.error('Upgrade available only when plan is within 15 days of expiry.');
+            return;
+        }
         setSelectedPlan(plan);
-        setShowMethodModal(true);
+        initiatePhonePe(plan); // Skip modal, direct to PhonePe as per requirements
     };
 
     // ── PhonePe Flow ──────────────────────────────────
-    const initiatePhonePe = async () => {
-        const plan = selectedPlan;
+    const initiatePhonePe = async (planToBuy = selectedPlan) => {
+        const plan = planToBuy;
         if (!plan || isProcessing) return;
 
         setIsProcessing(true);
@@ -145,37 +173,6 @@ export default function BillingPage() {
             }
         } catch (err) {
             toast.error(err.response?.data?.error || 'PhonePe payment failed.', { id: loadingToast });
-            setIsProcessing(false);
-            setProcessingPlanId(null);
-        }
-    };
-
-    // ── Binance Pay Flow ──────────────────────────────
-    const initiateBinance = async () => {
-        const plan = selectedPlan;
-        if (!plan || isProcessing) return;
-
-        setIsProcessing(true);
-        setShowMethodModal(false);
-        setProcessingPlanId(plan.id);
-
-        const loadingToast = toast.loading(`Opening Binance Pay for ${plan.name}...`);
-        try {
-            // Updated api.js to have binance.createOrder
-            const res = await schoolsApi.billing.binance.createOrder({ plan_id: plan.id });
-            toast.dismiss(loadingToast);
-
-            if (res.checkoutUrl) {
-                window.location.href = res.checkoutUrl;
-            } else if (res.universalUrl) {
-                window.location.href = res.universalUrl;
-            } else {
-                toast.error('Could not initiate Binance payment.');
-                setIsProcessing(false);
-                setProcessingPlanId(null);
-            }
-        } catch (err) {
-            toast.error(err.response?.data?.error || 'Binance Pay failed. Ensure API keys are setup.', { id: loadingToast });
             setIsProcessing(false);
             setProcessingPlanId(null);
         }
@@ -203,9 +200,32 @@ export default function BillingPage() {
                 </div>
             </div>
 
+            {/* Notifications Alert */}
+            {notifications.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                    {notifications.map(n => (
+                        <div key={n.id} style={{ 
+                            padding: '12px 16px', 
+                            background: 'rgba(239, 68, 68, 0.1)', 
+                            borderLeft: '4px solid #EF4444', 
+                            borderRadius: '4px', 
+                            marginBottom: 8,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between'
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <AlertTriangle size={18} color="#EF4444" />
+                                <span style={{ fontSize: 13, color: '#EF4444', fontWeight: 500 }}>{n.message}</span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {/* Status Banner */}
             {activeSub ? (
-                <div className={`bill-status ${isExpired ? 'bill-expired' : 'bill-active'}`}>
+                <div className={`bill-status ${isExpired ? 'bill-expired' : (daysRemaining <= 15 ? 'bill-warning' : 'bill-active')}`}>
                     <div className="bill-status-icon">
                         {isExpired ? <AlertTriangle size={22} color="white" /> : <CheckCircle size={22} color="white" />}
                     </div>
@@ -217,9 +237,14 @@ export default function BillingPage() {
                                 : `Valid until ${new Date(activeSub.end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} · ${activeSub.plan_details?.max_students === 0 ? 'Unlimited' : activeSub.plan_details?.max_students} Students · ${activeSub.plan_details?.max_teachers === 0 ? 'Unlimited' : activeSub.plan_details?.max_teachers} Teachers`
                             }
                         </p>
+                        {!isExpired && daysRemaining <= 15 && (
+                            <p style={{ color: '#F59E0B', fontWeight: 'bold', marginTop: 8 }}>
+                                ⚠️ Your plan expires in {daysRemaining} day{daysRemaining !== 1 ? 's' : ''}. You can now renew or upgrade.
+                            </p>
+                        )}
                     </div>
-                    <span className={`bill-badge ${isExpired ? 'bill-badge-exp' : ''}`}>
-                        {isExpired ? 'Expired' : '✓ Active'}
+                    <span className={`bill-badge ${isExpired ? 'bill-badge-exp' : (daysRemaining <= 15 ? 'bill-badge-warn' : '')}`}>
+                        {isExpired ? 'Expired' : (daysRemaining <= 15 ? 'Expiring Soon' : '✓ Active')}
                     </span>
                 </div>
             ) : (
@@ -307,13 +332,16 @@ export default function BillingPage() {
                             <button
                                 className={`bill-btn ${isActivePlan ? 'bill-btn-active' : 'bill-btn-buy'}`}
                                 onClick={() => !isActivePlan && handleBuyPlan(plan)}
-                                disabled={isActivePlan || isProcessing}
-                                style={isActivePlan ? {} : { background: meta.gradient }}
+                                disabled={isActivePlan || isProcessing || (!isActivePlan && !isNearExpiry)}
+                                style={(isActivePlan || (!isActivePlan && !isNearExpiry)) ? {} : { background: meta.gradient }}
+                                title={!isActivePlan && !isNearExpiry ? 'Upgrade available only when plan is near expiry' : ''}
                             >
                                 {isActivePlan ? (
                                     <><CheckCircle size={15} /> Current Plan</>
                                 ) : isProcPlan ? (
                                     <><div className="btn-spin" /> Opening PhonePe...</>
+                                ) : !isNearExpiry ? (
+                                    <>Unavailable (Not near expiry)</>
                                 ) : (
                                     <>Buy Plan <ArrowRight size={15} /></>
                                 )}
@@ -324,50 +352,86 @@ export default function BillingPage() {
             </div>
 
             {/* PhonePe & Binance Trust Strip */}
-            <div className="phonepe-trust">
+            <div className="phonepe-trust" style={{ marginBottom: 40 }}>
                 <span style={{ fontSize: 20 }}>🛡️</span>
                 <span>Payments powered by <strong style={{ color: '#5f259f' }}>PhonePe</strong> &amp; <strong style={{ color: '#FCD535' }}>Binance Pay</strong> · Secure Transaction</span>
                 <span className="phonepe-secured">🔒 SSL Secured</span>
             </div>
 
-            {/* Method Selection Modal */}
-            {showMethodModal && (
-                <div className="modal-overlay">
-                    <div className="method-modal glass-card fade-in">
-                        <div className="modal-head">
-                            <h3>Select Payment Method</h3>
-                            <button className="close-btn" onClick={() => setShowMethodModal(false)}>×</button>
-                        </div>
-                        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>
-                            Upgrading to <strong>{selectedPlan?.name?.toUpperCase()}</strong> plan (₹{selectedPlan?.price})
-                        </p>
+            {/* Billing & Payment History */}
+            <div style={{ marginTop: 40, borderTop: '1px solid var(--border)', paddingTop: 32 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+                    <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Billing & Payment History</h2>
+                </div>
+                
+                <div className="grid-2" style={{ gap: 24 }}>
+                    {/* Subscription History */}
+                    <div className="glass-card" style={{ padding: 20 }}>
+                        <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Plan Activations & Renewals</h3>
+                        {historyLoading ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading history...</p> : historyList.length === 0 ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No history found.</p> : (
+                            <table className="data-table" style={{ fontSize: 13 }}>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Action</th>
+                                        <th>Plan</th>
+                                        <th>Amount</th>
+                                        <th>Period</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {historyList.map(h => (
+                                        <tr key={h.id}>
+                                            <td>{new Date(h.created_at).toLocaleDateString()}</td>
+                                            <td><span className="badge badge-info" style={{ textTransform: 'capitalize' }}>{h.action}</span></td>
+                                            <td>{h.plan_name}</td>
+                                            <td>₹{Number(h.amount).toLocaleString('en-IN')}</td>
+                                            <td style={{ color: 'var(--text-secondary)' }}>
+                                                {h.start_date} to {h.end_date}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
 
-                        <div className="method-grid">
-                            <button className="method-opt phonepe-opt" onClick={initiatePhonePe}>
-                                <div className="opt-icon">📱</div>
-                                <div className="opt-text">
-                                    <strong>PhonePe / UPI</strong>
-                                    <span>GPay, PhonePe, Cards, Net Banking</span>
-                                </div>
-                                <ArrowRight size={16} />
-                            </button>
-
-                            <button className="method-opt binance-opt" onClick={initiateBinance}>
-                                <div className="opt-icon" style={{ background: '#FCD535' }}>
-                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="black">
-                                        <path d="M16.624 13.9202l2.711 2.7112-4.335 4.3351-2.711-2.7113-4.3351 4.3351-2.7112-2.7113 4.3351-4.3351-2.7112-2.7111 4.3351-4.3351 2.7112 2.7112 4.335-4.3351 2.7113 2.7113-4.3351 4.335zM12.0001 0l2.7112 2.7113-2.7112 2.7112-2.7112-2.7112L12.0001 0z" />
-                                    </svg>
-                                </div>
-                                <div className="opt-text">
-                                    <strong>Binance Pay</strong>
-                                    <span>USDT, BTC, ETH & Crypto</span>
-                                </div>
-                                <ArrowRight size={16} />
-                            </button>
-                        </div>
+                    {/* Payment Records */}
+                    <div className="glass-card" style={{ padding: 20 }}>
+                        <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Payment Records</h3>
+                        {paymentsLoading ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading payments...</p> : paymentsList.length === 0 ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No payments found.</p> : (
+                            <table className="data-table" style={{ fontSize: 13 }}>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Transaction ID</th>
+                                        <th>Method</th>
+                                        <th>Amount</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {paymentsList.map(p => (
+                                        <tr key={p.id}>
+                                            <td>{new Date(p.payment_date).toLocaleDateString()}</td>
+                                            <td style={{ fontFamily: 'monospace' }}>{p.transaction_id || '—'}</td>
+                                            <td style={{ textTransform: 'capitalize' }}>{p.payment_method}</td>
+                                            <td>₹{Number(p.amount).toLocaleString('en-IN')}</td>
+                                            <td>
+                                                <span className={`badge badge-${p.payment_status === 'completed' ? 'success' : p.payment_status === 'failed' ? 'danger' : 'warning'}`}>
+                                                    {p.payment_status}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
                     </div>
                 </div>
-            )}
+            </div>
+
+            {/* Method Selection Modal Removed - Direct to PhonePe as per requirement */}
 
             {/* STYLES */}
             <style>{`
@@ -379,12 +443,14 @@ export default function BillingPage() {
                 }
                 .bill-active { background: rgba(16,185,129,0.06); border-color: rgba(16,185,129,0.25); }
                 .bill-expired { background: rgba(239,68,68,0.06); border-color: rgba(239,68,68,0.25); }
+                .bill-warning { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.25); }
                 .bill-trial { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.25); }
                 .bill-status-icon {
                     width: 46px; height: 46px; border-radius: 12px;
                     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
                 }
                 .bill-active .bill-status-icon { background: #10B981; }
+                .bill-warning .bill-status-icon { background: #F59E0B; }
                 .bill-expired .bill-status-icon { background: #EF4444; }
                 .bill-trial .trial-icon { background: #F59E0B; }
                 .bill-status-body { flex: 1; }
@@ -394,6 +460,7 @@ export default function BillingPage() {
                     font-size: 11px; font-weight: 700; padding: 5px 12px;
                     border-radius: 20px; background: rgba(16,185,129,0.15); color: #10B981; white-space: nowrap;
                 }
+                .bill-badge-warn { background: rgba(245,158,11,0.15); color: #F59E0B; }
                 .bill-badge-exp { background: rgba(239,68,68,0.15); color: #EF4444; }
 
                 /* Secure strip */

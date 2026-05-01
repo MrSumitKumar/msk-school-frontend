@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { schoolsApi, saasApi, accountsApi } from '../../services/api';
-import { Plus, Search, Edit, Trash2, CheckCircle, XCircle, School, CreditCard, Calendar, UserPlus, Users } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, CheckCircle, XCircle, School, CreditCard, Calendar, UserPlus, Users, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function SchoolsPage() {
@@ -13,8 +13,11 @@ export default function SchoolsPage() {
     const [form, setForm] = useState({ name: '', board_type: 'cbse', contact_email: '', contact_phone: '', city: '', address: '' });
 
     // Manage Plan Form State
-    const [planForm, setPlanForm] = useState({ plan: '', status: 'active', start_date: '', end_date: '' });
+    const [planForm, setPlanForm] = useState({ plan: '', status: 'active', duration: '1_year' });
     const [ownerForm, setOwnerForm] = useState({ owner: '' });
+
+    // View Billing State
+    const [viewBillingSchool, setViewBillingSchool] = useState(null);
 
     const { data, isLoading } = useQuery({
         queryKey: ['schools'],
@@ -36,6 +39,18 @@ export default function SchoolsPage() {
         queryKey: ['subscription', managePlanSchool?.id],
         queryFn: () => saasApi.subscriptions.getBySchool(managePlanSchool.id),
         enabled: !!managePlanSchool?.id,
+    });
+
+    const { data: schoolBillingHistory, isLoading: billingLoading } = useQuery({
+        queryKey: ['school-billing', viewBillingSchool?.id],
+        queryFn: async () => {
+            const [hist, pay] = await Promise.all([
+                saasApi.subscriptionHistory.list({ school: viewBillingSchool.id }),
+                saasApi.payments.list({ school: viewBillingSchool.id })
+            ]);
+            return { history: hist.results || hist, payments: pay.results || pay };
+        },
+        enabled: !!viewBillingSchool?.id,
     });
 
     const schools = (data?.results || data || []).filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
@@ -76,7 +91,10 @@ export default function SchoolsPage() {
             setManagePlanSchool(null);
             toast.success('Plan assigned successfully');
         },
-        onError: (err) => toast.error(err.response?.data?.error || 'Failed to assign plan')
+        onError: (err) => {
+            const msg = err.response?.data?.error || err.response?.data?.detail || JSON.stringify(err.response?.data) || 'Failed to assign plan';
+            toast.error(msg);
+        }
     });
 
     const assignOwnerMutation = useMutation({
@@ -99,15 +117,13 @@ export default function SchoolsPage() {
             setPlanForm({
                 plan: school.subscription_details.plan_id || '',
                 status: school.subscription_details.status || 'active',
-                start_date: school.subscription_details.start_date || new Date().toISOString().split('T')[0],
-                end_date: school.subscription_details.end_date || ''
+                duration: '1_year'
             });
         } else {
             setPlanForm({
                 plan: school.subscription_plan || '',
                 status: school.is_active ? 'active' : 'expired',
-                start_date: new Date().toISOString().split('T')[0],
-                end_date: school.subscription_end || ''
+                duration: '1_year'
             });
         }
     };
@@ -164,9 +180,35 @@ export default function SchoolsPage() {
                                         <span style={{ color: 'var(--text-secondary)' }}>—</span>
                                     )}
                                 </td>
-                                <td>{s.is_active ? <span className="badge badge-success"><CheckCircle size={12} /> Active</span> : <span className="badge badge-danger"><XCircle size={12} /> Inactive</span>}</td>
+                                <td>
+                                    {(() => {
+                                        if (!s.is_active) return <span className="badge badge-danger"><XCircle size={12} /> Inactive</span>;
+                                        
+                                        // Check for near expiry (within 15 days)
+                                        if (s.subscription_end) {
+                                            const diff = new Date(s.subscription_end) - new Date();
+                                            const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+                                            if (days <= 0) return <span className="badge badge-danger"><XCircle size={12} /> Expired</span>;
+                                            if (days <= 15) return (
+                                                <span className="badge badge-warning" title={`${days} days remaining`}>
+                                                    <AlertTriangle size={12} /> Expiring Soon
+                                                </span>
+                                            );
+                                        }
+                                        
+                                        return <span className="badge badge-success"><CheckCircle size={12} /> Active</span>;
+                                    })()}
+                                </td>
                                 <td>
                                     <div style={{ display: 'flex', gap: 12 }}>
+                                        <button
+                                            onClick={() => setViewBillingSchool(s)}
+                                            className="btn-icon"
+                                            title="View Billing"
+                                            style={{ color: '#F59E0B' }}
+                                        >
+                                            <Calendar size={18} />
+                                        </button>
                                         <button
                                             onClick={() => handleAssignOwner(s)}
                                             className="btn-icon"
@@ -259,7 +301,46 @@ export default function SchoolsPage() {
                             </div>
                         </div>
 
-                        <form onSubmit={(e) => { e.preventDefault(); assignPlanMutation.mutate(planForm); }}>
+                        <form onSubmit={(e) => { 
+                            e.preventDefault(); 
+                            
+                            const today = new Date();
+                            const formatDt = (d) => {
+                                const y = d.getFullYear();
+                                const m = String(d.getMonth() + 1).padStart(2, '0');
+                                const day = String(d.getDate()).padStart(2, '0');
+                                return `${y}-${m}-${day}`;
+                            };
+                            let startDateStr = formatDt(today);
+                            let endDateStr = '';
+
+                            const endDate = new Date(today);
+                            let priceMultiplier = 1;
+                            
+                            if (planForm.status === 'active' || planForm.status === 'trial') {
+                                if (planForm.duration === '1_month') { endDate.setMonth(endDate.getMonth() + 1); priceMultiplier = 1; }
+                                else if (planForm.duration === '1_year') { endDate.setFullYear(endDate.getFullYear() + 1); priceMultiplier = 12; }
+                                else if (planForm.duration === '2_years') { endDate.setFullYear(endDate.getFullYear() + 2); priceMultiplier = 24; }
+                                else if (planForm.duration === '3_years') { endDate.setFullYear(endDate.getFullYear() + 3); priceMultiplier = 36; }
+                                
+                                endDateStr = formatDt(endDate);
+                            } else {
+                                endDateStr = formatDt(today);
+                            }
+
+                            const selectedPlanObj = (plansData?.results || plansData || []).find(p => p.id === parseInt(planForm.plan));
+                            const amount = selectedPlanObj ? selectedPlanObj.price * priceMultiplier : 0;
+
+                            const payload = {
+                                plan: planForm.plan,
+                                status: planForm.status,
+                                start_date: startDateStr,
+                                end_date: endDateStr,
+                                amount: amount, // Added amount for billing history
+                            };
+
+                            assignPlanMutation.mutate(payload); 
+                        }}>
                             <div className="grid-1" style={{ gap: 16 }}>
                                 <div>
                                     <label className="form-label">Select Subscription Plan</label>
@@ -291,24 +372,52 @@ export default function SchoolsPage() {
                                         </select>
                                     </div>
                                     <div>
-                                        <label className="form-label">Start Date</label>
-                                        <input
-                                            type="date"
+                                        <label className="form-label">Plan Duration</label>
+                                        <select
                                             className="form-input"
-                                            value={planForm.start_date}
-                                            onChange={e => setPlanForm({ ...planForm, start_date: e.target.value })}
-                                        />
+                                            value={planForm.duration}
+                                            onChange={e => setPlanForm({ ...planForm, duration: e.target.value })}
+                                            disabled={planForm.status === 'expired' || planForm.status === 'cancelled'}
+                                        >
+                                            <option value="1_month">1 Month</option>
+                                            <option value="1_year">1 Year</option>
+                                            <option value="2_years">2 Years</option>
+                                            <option value="3_years">3 Years</option>
+                                        </select>
                                     </div>
                                 </div>
-                                <div>
-                                    <label className="form-label">Expiry Date</label>
-                                    <input
-                                        type="date"
-                                        className="form-input"
-                                        value={planForm.end_date}
-                                        onChange={e => setPlanForm({ ...planForm, end_date: e.target.value })}
-                                    />
-                                </div>
+
+                                {planForm.plan && (
+                                    <div style={{ marginTop: 12, padding: 12, background: 'rgba(59, 130, 246, 0.05)', borderRadius: 8, fontSize: 14, color: '#3B82F6', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <strong>Total Amount:</strong>
+                                        <span style={{ fontSize: 18, fontWeight: 800 }}>
+                                            ₹{(
+                                                ((plansData?.results || plansData || []).find(p => p.id === parseInt(planForm.plan))?.price || 0) * 
+                                                (planForm.duration === '1_month' ? 1 : planForm.duration === '1_year' ? 12 : planForm.duration === '2_years' ? 24 : 36)
+                                            ).toLocaleString()}
+                                        </span>
+                                    </div>
+                                )}
+
+                                {planForm.status === 'active' || planForm.status === 'trial' ? (
+                                    <div style={{ padding: 12, background: 'rgba(var(--primary-rgb), 0.05)', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                                        <span style={{ display: 'block', marginBottom: 4 }}><strong>Activation:</strong> {new Date().toLocaleDateString()}</span>
+                                        <span style={{ display: 'block' }}><strong>Expires:</strong> {
+                                            (() => {
+                                                const d = new Date();
+                                                if (planForm.duration === '1_month') d.setMonth(d.getMonth() + 1);
+                                                else if (planForm.duration === '1_year') d.setFullYear(d.getFullYear() + 1);
+                                                else if (planForm.duration === '2_years') d.setFullYear(d.getFullYear() + 2);
+                                                else if (planForm.duration === '3_years') d.setFullYear(d.getFullYear() + 3);
+                                                return d.toLocaleDateString();
+                                            })()
+                                        }</span>
+                                    </div>
+                                ) : (
+                                    <div style={{ padding: 12, background: 'rgba(239, 68, 68, 0.05)', borderRadius: 8, fontSize: 13, color: '#EF4444' }}>
+                                        Plan will be marked as {planForm.status} immediately.
+                                    </div>
+                                )}
                             </div>
 
                             <div className="modal-actions" style={{ marginTop: 32 }}>
@@ -361,6 +470,70 @@ export default function SchoolsPage() {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* View Billing Modal */}
+            {viewBillingSchool && (
+                <div className="modal-overlay" onClick={() => setViewBillingSchool(null)}>
+                    <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 800, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                            <div style={{ padding: 10, borderRadius: 12, background: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B' }}>
+                                <Calendar size={24} />
+                            </div>
+                            <div>
+                                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Billing & Payment History</h3>
+                                <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)' }}>{viewBillingSchool.name}</p>
+                            </div>
+                            <button className="btn-icon" onClick={() => setViewBillingSchool(null)} style={{ marginLeft: 'auto' }}><XCircle size={20} /></button>
+                        </div>
+
+                        <div style={{ overflowY: 'auto', paddingRight: 8 }}>
+                            {billingLoading ? <p>Loading billing data...</p> : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                                    <div>
+                                        <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Plan Activations</h4>
+                                        {schoolBillingHistory?.history?.length === 0 ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No plan history found.</p> : (
+                                            <table className="data-table" style={{ fontSize: 13 }}>
+                                                <thead><tr><th>Date</th><th>Action</th><th>Plan</th><th>Amount</th><th>Period</th></tr></thead>
+                                                <tbody>
+                                                    {schoolBillingHistory?.history?.map(h => (
+                                                        <tr key={h.id}>
+                                                            <td>{new Date(h.created_at).toLocaleDateString()}</td>
+                                                            <td><span className="badge badge-info">{h.action}</span></td>
+                                                            <td>{h.plan_name}</td>
+                                                            <td>₹{Number(h.amount).toLocaleString('en-IN')}</td>
+                                                            <td style={{ color: 'var(--text-secondary)' }}>{h.start_date} to {h.end_date}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Payment Records</h4>
+                                        {schoolBillingHistory?.payments?.length === 0 ? <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No payments found.</p> : (
+                                            <table className="data-table" style={{ fontSize: 13 }}>
+                                                <thead><tr><th>Date</th><th>Transaction ID</th><th>Method</th><th>Amount</th><th>Status</th></tr></thead>
+                                                <tbody>
+                                                    {schoolBillingHistory?.payments?.map(p => (
+                                                        <tr key={p.id}>
+                                                            <td>{new Date(p.payment_date).toLocaleDateString()}</td>
+                                                            <td style={{ fontFamily: 'monospace' }}>{p.transaction_id || '—'}</td>
+                                                            <td>{p.payment_method}</td>
+                                                            <td>₹{Number(p.amount).toLocaleString('en-IN')}</td>
+                                                            <td><span className={`badge badge-${p.payment_status === 'completed' ? 'success' : 'warning'}`}>{p.payment_status}</span></td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}

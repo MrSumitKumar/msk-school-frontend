@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { saasApi, schoolsApi } from '../../services/api';
-import { CheckSquare, Search, Edit, CheckCircle, XCircle, RefreshCw, Users, Filter } from 'lucide-react';
+import { CheckSquare, Search, Edit, CheckCircle, XCircle, RefreshCw, Users, Filter, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function SubscriptionsPage() {
@@ -36,6 +36,15 @@ export default function SubscriptionsPage() {
             toast.success('Subscription updated');
         },
         onError: () => toast.error('Failed to update subscription')
+    });
+
+    const deleteMutation = useMutation({
+        mutationFn: (id) => saasApi.subscriptions.delete(id),
+        onSuccess: () => {
+            qc.invalidateQueries(['subscriptions']);
+            toast.success('Subscription deleted');
+        },
+        onError: () => toast.error('Failed to delete subscription')
     });
 
     const handleEdit = (sub) => {
@@ -147,7 +156,10 @@ export default function SubscriptionsPage() {
                                     {s.status === 'cancelled' && <span className="badge badge-outline">Cancelled</span>}
                                 </td>
                                 <td>
-                                    <button onClick={() => handleEdit(s)} className="btn-icon text-primary"><Edit size={16} /></button>
+                                    <div style={{ display: 'flex', gap: 12 }}>
+                                        <button onClick={() => handleEdit(s)} className="btn-icon" style={{ color: 'var(--primary)' }}><Edit size={16} /></button>
+                                        <button onClick={() => { if (window.confirm('Are you sure? This will remove the school\'s active plan.')) deleteMutation.mutate(s.id); }} className="btn-icon" style={{ color: '#EF4444' }}><Trash2 size={16} /></button>
+                                    </div>
                                 </td>
                             </tr>
                         ))}
